@@ -129,20 +129,30 @@ function restorePreviousImage() {
 }
 
 function loadImage(token, url) {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      if (token !== requestToken) return;
-      restorePreviousImage();
-      showError("이미지 생성이 지연되고 있습니다. 다시 시도해 주세요.");
-      resolve();
-    }, 100000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
 
-    resultImage.onload = () => {
+  return fetch(url, { signal: controller.signal })
+    .then(async (response) => {
       if (token !== requestToken) return;
-      clearTimeout(timeout);
-      shownSrc = resultImage.currentSrc || resultImage.src;
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "이미지를 불러오지 못했습니다. 다시 시도해 주세요.");
+      }
+      const blob = await response.blob();
+      if (token !== requestToken) return;
+      if (shownSrc.startsWith("blob:")) URL.revokeObjectURL(shownSrc);
+      const objectUrl = URL.createObjectURL(blob);
+      shownSrc = objectUrl;
       readyImageUrl = url;
       readySeed = state.seed;
+      resultImage.alt = state.originalPrompt || "생성된 이미지";
+      await new Promise((resolve, reject) => {
+        resultImage.onload = () => resolve();
+        resultImage.onerror = () => reject(new Error("이미지를 불러오지 못했습니다. 다시 시도해 주세요."));
+        resultImage.src = objectUrl;
+      });
+      if (token !== requestToken) return;
       resultImage.hidden = false;
       resultImage.classList.add("is-in");
       loadingMask.hidden = true;
@@ -151,20 +161,19 @@ function loadImage(token, url) {
       state.imageReady = true;
       setBusy(false);
       setStatus("이미지를 만들었습니다.");
-      resolve();
-    };
-
-    resultImage.onerror = () => {
+    })
+    .catch((error) => {
       if (token !== requestToken) return;
-      clearTimeout(timeout);
       restorePreviousImage();
-      showError("이미지를 불러오지 못했습니다. 다시 시도해 주세요.");
-      resolve();
-    };
-
-    resultImage.alt = state.originalPrompt || "생성된 이미지";
-    resultImage.src = url;
-  });
+      const message =
+        error.name === "AbortError"
+          ? "이미지 생성이 지연되고 있습니다. 다시 시도해 주세요."
+          : error.message || "이미지를 불러오지 못했습니다. 다시 시도해 주세요.";
+      showError(message);
+    })
+    .finally(() => {
+      clearTimeout(timeout);
+    });
 }
 
 async function generate({ regenerate }) {

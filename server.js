@@ -59,16 +59,24 @@ const STYLE_TOKENS = [
   "애니",
   "무드",
   "사진",
+  "실사",
+  "카툰",
+  "만화",
+  "손그림",
+  "선화",
+  "낙서",
+  "졸라맨",
+  "형식",
 ];
 
 const RULES = [
-  ["비 오는 서울 야경", "a rainy night in Seoul, wet asphalt mirroring neon signs, Namsan Tower fading into mist"],
-  ["우주를 걷는 고양이", "a small curious cat walking through outer space, surrounded by stars and soft nebula light"],
+  ["비 오는 서울 야경", "a rainy night street in Seoul, simple neon sign shapes and a distant tower"],
+  ["우주를 걷는 고양이", "a small cat walking through outer space, simple stars around it"],
   ["한옥 마당의 봄", "a spring courtyard of a traditional Korean hanok, wooden pillars, a stone path, and pale blossoms"],
   ["눈 내리는 제주 돌담", "snow falling over Jeju Island basalt stone walls, a quiet winter village, soft overcast light"],
   ["빨간 우산을 든 소녀", "a girl holding a red umbrella"],
   ["유리 온실", "a glass greenhouse filled with plants"],
-  ["서울 야경", "Seoul at night, neon signs and river reflections"],
+  ["서울 야경", "Seoul at night, simple neon sign shapes"],
   ["비 오는", "rainy weather"],
   ["눈 내리는", "falling snow"],
   ["골든아워", "golden hour sunlight"],
@@ -166,14 +174,46 @@ const RULES = [
   ["거리", "a street"],
 ];
 
+const LINE_LEAD =
+  "The entire image is a simple flat cartoon doodle, full frame, not a photo of a drawing. Thin wobbly black outlines, flat unshaded color fills, stick-figure characters, simple 2D line drawing of";
+const LINE_SUFFIX = [
+  "hand-drawn doodle style",
+  "stick-figure style where applicable",
+  "minimalist colors",
+  "clean black outlines",
+  "rough sketch texture",
+  "no gradients, flat design",
+  "no shading, no volume, no pencil rendering, no depth",
+].join(", ");
+const LINE_NEGATIVE =
+  "no photorealism, no 3D render, no volumetric lighting, no reflections, no intricate textures, no realistic fur";
+
+const PHOTO_LANGUAGE = [
+  /\bphotorealistic\b/gi,
+  /\bcinematic(?:\s+lighting)?\b/gi,
+  /\bvolumetric(?:\s+lighting)?\b/gi,
+  /\b3d(?:\s+render(?:ing)?)?\b/gi,
+  /\boctane\b/gi,
+  /\bultra detailed\b/gi,
+  /\bhighly detailed\b/gi,
+  /\bsharp focus\b/gi,
+  /\bunreal engine\b/gi,
+  /\brealistic\b/gi,
+  /\bdepth of field\b/gi,
+  /\breflections?\b/gi,
+  /\bmirroring\b/gi,
+  /\bglobal illumination\b/gi,
+];
+
 const GROQ_SYSTEM = [
-  "You write one text-to-image prompt in English.",
-  "Output only the prompt. No quotes, labels, markdown, or explanation.",
-  "Preserve the user's subject, setting, and mood. Do not invent a different scene.",
-  "If the input is already a strong English prompt, lightly refine the wording and keep the meaning.",
-  "If the input is Korean or another language, translate it faithfully and add concrete visual detail.",
-  "Include subject, environment, lighting, mood, composition, and medium.",
-  "Keep it to one line under 70 words.",
+  "You describe only the subject of an image in English.",
+  "Output one line. No quotes, labels, markdown, or explanation.",
+  "Preserve the user's subject and setting. Do not invent a different scene.",
+  "Do not describe medium, lighting, realism, or rendering.",
+  "The image will always be drawn as a simple 2D hand-drawn doodle, so describe shapes a line drawing can show.",
+  "If the user asks for photorealism, 3D, or a cinematic look, ignore that and describe only the subject.",
+  "Translate Korean faithfully.",
+  "Keep it under 40 words.",
   "Do not name living artists.",
 ].join(" ");
 
@@ -255,87 +295,30 @@ function hasSceneHangul(rest) {
   let text = rest;
   const tokens = [...STYLE_TOKENS].sort((a, b) => b.length - a.length);
   for (const token of tokens) text = text.split(token).join(" ");
+  text = text.replace(/에서|으로|까지|부터|에게|한테|처럼|같이|은|는|이|가|을|를|의|에|와|과|도|로|만|랑/g, " ");
   return /[가-힣]/.test(text);
 }
 
-function detectStyle(text) {
-  const lower = text.toLowerCase();
-  const has = (...words) => words.some((word) => text.includes(word) || lower.includes(word));
-  const hasWord = (word) => new RegExp(`\\b${word}\\b`, "i").test(text);
-
-  if (has("지브리") || hasWord("ghibli")) {
-    return {
-      lead: "A hand-painted animated scene of",
-      suffix: "gentle natural light, storybook mood, detailed background, refined animation frame",
-    };
+function stripPhotoLanguage(text) {
+  let cleaned = text;
+  for (const pattern of PHOTO_LANGUAGE) {
+    pattern.lastIndex = 0;
+    cleaned = cleaned.replace(pattern, " ");
   }
-  if (has("애니메이션", "애니") || hasWord("anime") || hasWord("cartoon")) {
-    return {
-      lead: "A high-quality anime illustration of",
-      suffix: "clean linework, expressive lighting, detailed background, cohesive color",
-    };
-  }
-  if (has("수채화") || hasWord("watercolor")) {
-    return {
-      lead: "A watercolor painting of",
-      suffix: "soft paper texture, translucent washes, delicate edges, airy composition",
-    };
-  }
-  if (has("유화") || lower.includes("oil painting")) {
-    return {
-      lead: "An oil painting of",
-      suffix: "visible brushwork, rich pigment, gallery lighting, fine art",
-    };
-  }
-  if (has("수묵", "동양화")) {
-    return {
-      lead: "A traditional Korean ink wash painting of",
-      suffix: "ink on Korean paper, restrained brushwork, quiet negative space",
-    };
-  }
-  if (has("픽셀") || hasWord("pixel")) {
-    return {
-      lead: "Detailed pixel art of",
-      suffix: "crisp pixels, intentional palette, polished game art",
-    };
-  }
-  if (has("쓰리디") || hasWord("3d")) {
-    return {
-      lead: "A refined 3D render of",
-      suffix: "soft global illumination, realistic materials, polished lighting",
-    };
-  }
-  if (has("미니멀") || hasWord("minimal")) {
-    return {
-      lead: "A minimalist composition of",
-      suffix: "generous negative space, precise shapes, calm studio light",
-    };
-  }
-  if (has("일러스트") || hasWord("illustration")) {
-    return {
-      lead: "A polished digital illustration of",
-      suffix: "clear shapes, thoughtful lighting, refined color, detailed finish",
-    };
-  }
-  return {
-    lead: "A photorealistic cinematic scene of",
-    suffix: "highly detailed, cinematic lighting, sharp focus, natural color, refined composition",
-  };
+  return cleaned.replace(/\s+/g, " ").replace(/\s+([,.;])/g, "$1").trim();
 }
 
-function isReadyMadePrompt(text) {
-  const words = text.trim().split(/\s+/).length;
-  if (words >= 22) return true;
-  return /\b(cinematic|photorealistic|ultra detailed|highly detailed|sharp focus|octane|watercolor|oil painting)\b/i.test(
-    text
-  );
-}
+function enforceLineStyle(scene) {
+  const normalized = String(scene || "").replace(/\s+/g, " ").trim();
+  if (normalized.startsWith(LINE_LEAD) && normalized.includes(LINE_NEGATIVE)) {
+    return normalized.slice(0, ENHANCED_LIMIT);
+  }
 
-function enhanceEnglish(original) {
-  if (isReadyMadePrompt(original)) return original;
-  const { suffix } = detectStyle(original);
-  if (original.toLowerCase().includes(suffix.slice(0, 16).toLowerCase())) return original;
-  return `${original}, ${suffix}`;
+  const fixed = `, ${LINE_SUFFIX}. ${LINE_NEGATIVE}`;
+  const lead = `${LINE_LEAD} `;
+  const budget = Math.max(40, ENHANCED_LIMIT - lead.length - fixed.length);
+  const subject = cleanText(stripPhotoLanguage(normalized), budget) || "the requested subject";
+  return `${lead}${subject}${fixed}`;
 }
 
 function enhanceWithRules(input) {
@@ -343,9 +326,8 @@ function enhanceWithRules(input) {
   if (!original) return "";
 
   const { hangul, latin } = scriptStats(original);
-  if (hangul === 0 && latin > 0) return enhanceEnglish(original);
+  if (hangul === 0 && latin > 0) return enforceLineStyle(original);
 
-  const style = detectStyle(original);
   const { found, rest } = extractKeywords(original);
   let extra = rest.replace(/[가-힣]/g, " ").replace(/\s+/g, " ").trim();
   if (!/[A-Za-z0-9]/.test(extra)) extra = "";
@@ -354,15 +336,15 @@ function enhanceWithRules(input) {
   if (found.length) subject.push(found.join(", "));
   if (extra) subject.push(extra);
 
-  let sentence;
+  let scene;
   if (subject.length === 0) {
-    sentence = `${style.lead} this idea: "${original}"`;
+    scene = `this idea: "${original}"`;
   } else {
-    sentence = `${style.lead} ${subject.join(", ")}`;
-    if (hasSceneHangul(rest)) sentence += `, faithfully depicting: "${original}"`;
+    scene = subject.join(", ");
+    if (hasSceneHangul(rest)) scene += `, faithfully depicting: "${original}"`;
   }
 
-  return cleanText(`${sentence}, ${style.suffix}`, ENHANCED_LIMIT);
+  return enforceLineStyle(scene);
 }
 
 function groqModels() {
@@ -420,7 +402,7 @@ async function callGroq(apiKey, model, prompt) {
 
 async function enhancePrompt(prompt, skipEnhance, provided) {
   if (skipEnhance) {
-    const text = cleanText(provided, ENHANCED_LIMIT);
+    const text = enforceLineStyle(provided);
     if (text.length < 2) {
       const error = new Error("다시 만들 프롬프트가 없습니다.");
       error.status = 400;
@@ -438,7 +420,7 @@ async function enhancePrompt(prompt, skipEnhance, provided) {
   for (const model of groqModels()) {
     try {
       const result = await callGroq(apiKey, model, prompt);
-      return { text: result.text, by: "groq", model: result.model, notice: "" };
+      return { text: enforceLineStyle(result.text), by: "groq", model: result.model, notice: "" };
     } catch (error) {
       lastError = error;
       console.error(`[groq] ${model} failed (${error.status || "network"}): ${error.message}`);
@@ -490,7 +472,17 @@ function extensionFor(contentType) {
   return "jpg";
 }
 
-async function fetchPollinations(job) {
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(response) {
+  const header = Number(response.headers.get("retry-after"));
+  if (Number.isFinite(header) && header > 0) return Math.min(header * 1000 + 500, 20000);
+  return 8000;
+}
+
+async function fetchPollinationsOnce(job, timeoutMs) {
   const response = await fetch(pollinationsUrl(job.enhancedPrompt, job.seed), {
     headers: {
       Accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
@@ -498,11 +490,15 @@ async function fetchPollinations(job) {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
-    throw new Error(`이미지 서버가 ${response.status} 응답을 반환했습니다.`);
+    const error = new Error(`이미지 서버가 ${response.status} 응답을 반환했습니다.`);
+    error.status = response.status;
+    error.retryAfterMs = retryDelayMs(response);
+    await response.arrayBuffer().catch(() => {});
+    throw error;
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
@@ -513,6 +509,34 @@ async function fetchPollinations(job) {
     throw new Error("이미지 데이터를 받지 못했습니다. 다시 시도해 주세요.");
   }
   return { buffer, contentType };
+}
+
+async function fetchPollinations(job) {
+  const deadline = Date.now() + 85000;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining < 4000) break;
+
+    try {
+      return await fetchPollinationsOnce(job, Math.min(remaining, 40000));
+    } catch (error) {
+      lastError = error;
+      const retryable = [402, 408, 429, 500, 502, 503, 504].includes(error.status);
+      const delay = Math.min(error.retryAfterMs || 8000, deadline - Date.now() - 4000);
+      if (!retryable || attempt === 4 || delay < 1000) break;
+      console.log(`[image] ${error.status}, ${delay}ms 후 재시도 (${attempt}/4)`);
+      await wait(delay);
+    }
+  }
+
+  if (lastError?.status === 402 || lastError?.status === 429) {
+    const error = new Error("이미지 서버가 잠시 바쁘습니다. 몇 초 뒤 다시 생성해 주세요.");
+    error.status = lastError.status;
+    throw error;
+  }
+  throw lastError || new Error("이미지를 가져오지 못했습니다.");
 }
 
 async function resolveImage(job) {
